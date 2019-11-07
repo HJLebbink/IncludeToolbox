@@ -49,6 +49,7 @@
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="Commands\IncludeWhatYouUse_Project.cs" />
     <Compile Include="Options\Constants.cs" />
     <Compile Include="Options\FormatterOptionsPage.cs">
       <SubType>Component</SubType>

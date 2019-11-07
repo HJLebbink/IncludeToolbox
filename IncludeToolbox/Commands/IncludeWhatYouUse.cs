@@ -1,6 +1,7 @@
 ﻿using IncludeToolbox.IncludeWhatYouUse;
 using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Shell.Interop;
+using Microsoft.VisualStudio.Text;
 using System;
 using System.ComponentModel.Design;
 using System.IO;
@@ -15,6 +16,8 @@ namespace IncludeToolbox.Commands
     internal sealed class IncludeWhatYouUse : CommandBase<IncludeWhatYouUse>
     {
         public override CommandID CommandID => new CommandID(CommandSetGuids.MenuGroup, 0x0103);
+
+        public static bool WorkInProgress { get; private set; }
 
         /// <summary>
         /// Whether we already checked for updates.
@@ -205,5 +208,74 @@ namespace IncludeToolbox.Commands
                 dialog?.EndWaitDialog();
             }
         }
+
+        public async Task<bool> PerformIncludeWhatYouUse(EnvDTE.Document document)
+        {
+            if (document == null)
+            {
+                return false;
+            }
+            await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+
+            var settingsIwyu = (IncludeWhatYouUseOptionsPage)Package.GetDialogPage(typeof(IncludeWhatYouUseOptionsPage));
+
+            var canCompile = await VSUtils.VCUtils.IsCompilableFile(document);
+            if (canCompile.Result == false)
+            {
+                Output.Instance.WriteLine($"Can't compile file '{canCompile.Reason}': {document.Name}");
+                return false;
+            }
+
+            if (WorkInProgress)
+            {
+                _ = Output.Instance.ErrorMsg("Include What You Use already in progress!");
+                return false;
+            }
+            WorkInProgress = true;
+
+            // Save all documents.
+            try
+            {
+                document.DTE.Documents.SaveAll();
+            }
+            catch (Exception saveException)
+            {
+                Output.Instance.WriteLine("Failed to get save all documents: {0}", saveException);
+            }
+
+            var project = document.ProjectItem?.ContainingProject;
+            if (project == null)
+            {
+                Output.Instance.WriteLine("The document {0} is not part of a project.", document.Name);
+                return false;
+            }
+
+            var dialogFactory = ServiceProvider.GetService(typeof(SVsThreadedWaitDialogFactory)) as IVsThreadedWaitDialogFactory;
+            if (dialogFactory == null)
+            {
+                Output.Instance.WriteLine("Failed to get IVsThreadedWaitDialogFactory service.");
+                return false;
+            }
+            await OptionalDownloadOrUpdate(settingsIwyu, dialogFactory);
+
+            // Start wait dialog.
+            {
+                IVsThreadedWaitDialog2 dialog = null;
+                dialogFactory.CreateInstance(out dialog);
+                dialog?.StartWaitDialog("Include Toolbox", "Running include-what-you-use", null, null, "Running include-what-you-use", 0, false, true);
+
+                string output = await IWYU.RunIncludeWhatYouUse(document.FullName, project, settingsIwyu);
+                if (settingsIwyu.ApplyProposal && output != null)
+                {
+                    var settingsFormatting = (FormatterOptionsPage)Package.GetDialogPage(typeof(FormatterOptionsPage));
+                    await IWYU.Apply(output, settingsIwyu.RunIncludeFormatter, settingsFormatting);
+                }
+
+                dialog?.EndWaitDialog();
+            }
+
+            return true;
+        }
+
     }
 }
